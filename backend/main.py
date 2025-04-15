@@ -133,8 +133,8 @@ def main():
     # This loops through all the sensors
     for sensor in sensor_config:
         # dynamically create a new collection and add to the tuple, this will read from sensor collection
-        CO2_db_name = f"{sensor["name"]}_CO2_collection_run{settings_list[0]["run_number"]}"   # db for CO2
-        DO_db_name = f"{sensor["name"]}_DO_collection_run{settings_list[0]["run_number"]}"   # db for DO
+        CO2_db_name = f"{sensor['name']}_CO2_collection_run{settings_list[0]['run_number']}"   # db for CO2
+        DO_db_name = f"{sensor['name']}_DO_collection_run{settings_list[0]['run_number']}"   # db for DO
         CO2_db_collection = db[CO2_db_name]
         DO_db_collection = db[DO_db_name]
         CO2_db_collection.insert_one({"init": "collection created"})
@@ -192,8 +192,8 @@ def main():
             sensor_config = sensor_collection.find()   # get all the sensors
             for sensor in sensor_config:
                 # dynamically create a new collection and add to the tuple, this will read from sensor collection
-                CO2_db_name = f"{sensor["name"]}_CO2_collection_run{settings_list[0]["run_number"]}"   # db for CO2
-                DO_db_name = f"{sensor["name"]}_DO_collection_run{settings_list[0]["run_number"]}"   # db for DO
+                CO2_db_name = f"{sensor['name']}_CO2_collection_run{settings_list[0]['run_number']}"   # db for CO2
+                DO_db_name = f"{sensor['name']}_DO_collection_run{settings_list[0]['run_number']}"   # db for DO
                 CO2_db_collection = db[CO2_db_name]
                 DO_db_collection = db[DO_db_name]
                 #water_sensor = Water_Sensor(sensor["connection"], sensor["baud_rate"])

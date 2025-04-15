@@ -37,35 +37,37 @@ function Login() {
       if (response.status !== 200) {
           setErrorMessage(result.message || "Invalid email or password.");
       } else {
-          if (result.success) {
-              console.log("Login Successful:", result.message);
+          console.log("Login Successful:", result.message);
+          // Fetch user role after login (a separate protected endpoint is better)
+          const roleResponse = await fetch('/api/protected', { // Assuming /api/protected returns user info including role
+            headers: {
+              // The browser will automatically include the 'access_token_cookie'
+            },
+        });
+        if (roleResponse.ok) {
+          const roleResult = await roleResponse.json();
+          const userRole = roleResult.role;
+          localStorage.setItem("userRole", userRole); // You might still want to store role for frontend logic
 
-              // Store user role in localStorage
-              if(result.user){
-                  localStorage.setItem("userRole", result.user.role);
-
-                  // Navigate based on the role
-                  if (result.user.role === "admin") {
-                      navigate("/Home");
-                  } else if (result.user.role === "operator") {
-                      navigate("/operator-dashboard");
-                  } else if (result.user.role === "observer") {
-                      navigate("/observer-dashboard");
-                  } else {
-                      setErrorMessage("Unknown role. Contact admin");
-                  }
-              } else {
-                  setErrorMessage("User data missing from response.");
+            if (userRole === "admin") {
+              navigate("/Home");
+            } else if (userRole === "operator") {
+              navigate("/operator-dashboard");
+            } else if (userRole === "observer") {
+              navigate("/observer-dashboard");
+            } else {
+              setErrorMessage("Unknown role in token.");
             }
-
           } else {
-              setErrorMessage(result.message || "Invalid credentials.");
+            setErrorMessage("Failed to fetch user information after login.");
+            console.error("Failed to fetch user info:", roleResponse.status);
+            navigate('/login'); // redirects to login if user fetching fails
           }
         }
-    } catch (error) {
-      setErrorMessage("Network error or server unavailable. Please try again later.");
-      console.error("Login Error:", error);
-    }
+      } catch (error) {
+        setErrorMessage("Network error or server unavailable. Please try again later.");
+        console.error("Login Error:", error);
+      }
     
 
       /*if (response.status !== 200 && response.status !== 201) {

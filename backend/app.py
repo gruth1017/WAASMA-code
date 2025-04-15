@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, abort
+from flask_jwt_extended import create_access_token, JWTManager, verify_jwt_in_request, get_jwt
 from functools import wraps
 import json
 import os
@@ -9,11 +10,20 @@ from sys_state import Sys_State
 import time
 from datetime import datetime, timedelta
 from db_config import user_collection, sensor_collection, settings_collection
+import jwt
+import bcrypt
+
 
 class Flask_App():
     # Shared with main
     system_state = None
-
+    SECRET_KEY = os.environ.get('JWT_SECRET_KEY', '12345ABCDE')
+    ALGORITHM = 'HS256'
+    HARDCODED_USER = {
+        "username": "gruth1017@gmail.com",
+        "password": "Password",  # NEVER do this in production
+        "Role": "operator"
+    }
     # constructor
     def __init__(self, state) -> None:
         self.app = Flask(__name__)
@@ -21,6 +31,16 @@ class Flask_App():
         #, async_mode='eventlet'
         self.state = state # This is a pointer to the system state object in main
         CORS(self.app, resources={r"/*": {"origins": "http://localhost:5173"}})  # This allows the frontend and backend to connect
+
+        # Configure Flask-Session for secure cookies (adjust as needed)
+        self.SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'super-secret')
+        self.app.config["JWT_SECRET_KEY"] = self.SECRET_KEY
+        self.app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
+        self.app.config["JWT_COOKIE_SECURE"] = True  # Only send over HTTPS in production
+        self.app.config["JWT_COOKIE_HTTPONLY"] = True # Prevent JavaScript access
+        self.app.config["JWT_COOKIE_SAMESITE"] = "Strict"
+        self.jwt = JWTManager(self.app)
+
 
         # Implementation of user roles
         def require_role(roles):
@@ -34,6 +54,110 @@ class Flask_App():
                 return decorated_function
             return decorator
 
+        def create_jwt_token(self, user_id, role):
+            access_token = create_access_token(identity=str(user_id), additional_claims={'role': role})
+            return access_token
+
+        def verify_jwt_token(token):
+            try:
+                payload = jwt.decode(token, self.SECRET_KEY, algorithms=[self.ALGORITHM])
+                return payload
+            except jwt.ExpiredSignatureError:
+                return None  # Token has expired
+            except jwt.InvalidTokenError:
+                return None  # Invalid token
+
+        def authenticate_token():
+            def decorator(f):
+                @wraps(f)
+                def wrapper(*args, **kwargs):
+                    auth_header = request.headers.get('Authorization')
+                    if auth_header and auth_header.startswith('Bearer '):
+                        token = auth_header.split(' ')[1]
+                        payload = verify_jwt_token(token)
+                        if payload:
+                            #change user_id to payload and add .get('sub) for the secon payload
+                            kwargs['user_id'] = payload
+                            return f(*args, **kwargs)
+                        else:
+                            return jsonify({'message': 'Invalid or expired token'}), 401
+                    else:
+                        return jsonify({'message': 'Authorization token is missing'}), 401
+                return wrapper
+            return decorator
+
+        # User authentication functions (assuming MongoDB for user_collection)
+        def get_user_by_username(username):
+            return user_collection.find_one({'username': username})
+
+        def create_user(username, password):
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            user = {'username': username, 'password_hash': password_hash,'role': role} # remove the role part after testing
+            result = user_collection.insert_one(user)
+            return result.inserted_id
+
+        def check_password(user, password):
+            return user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'])
+
+        # Routes
+        @self.app.route("/register", methods=["POST"])
+        def register():
+            data = request.json
+            username = data.get('username')
+            password = data.get('password')
+
+            if not username or not password:
+                return jsonify({'message': 'Username and password are required'}), 400
+
+            if get_user_by_username(username):
+                return jsonify({'message': 'Username already exists'}), 409
+
+            user_id = create_user(username, password)
+            token = create_jwt_token(user_id)
+            return jsonify({'message': 'User created successfully', 'token': token}), 201
+
+        @self.app.route("/login", methods=["POST"])
+        def login():
+            data = request.json
+            username = data.get('username')
+            password = data.get('userPassword')
+
+            #delete hardcoded function once testing works.
+            if username == Flask_App.HARDCODED_USER['username'] and password == Flask_App.HARDCODED_USER['password']:
+                # In a real app, you'd fetch the user's ID from the database
+                # But since we're hardcoding, we'll just use a fixed ID
+                hardcoded_user_id = "hardcoded_user_id"  #  <--- NEVER do this in production
+                token = create_jwt_token(hardcoded_user_id, Flask_App.HARDCODED_USER['Role'])
+                response = make_response(jsonify({'message': 'Login successful'}))
+                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600) # max_age in seconds
+                return response, 200
+            
+            user = get_user_by_username(username)
+            if user and check_password(user, password):
+                token = create_jwt_token(user['_id'], user['role']) # Include the user's role in the token
+                response = make_response(jsonify({'message': 'Login successful'}))
+                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600) # max_age in seconds
+                return response, 200
+            else:
+                return jsonify({'message': 'Invalid credentials'}), 401
+            # delete up to ^ row and uncomment below
+
+            #user = get_user_by_username(username)
+            #if user and check_password(user, password):
+                #token = create_jwt_token(str(user['_id'])) # Assuming _id is ObjectId, convert to string
+                #return jsonify({'token': token}), 200
+            #else:
+                #return jsonify({'message': 'Invalid credentials'}), 401
+
+        @self.app.route("/api/protected", methods=["GET"])
+        @self.authenticate_token()
+        def protected(payload):
+            user = user_collection.find_one({'_id': ObjectId(payload['sub'])})
+            if user:
+                return jsonify({'message': f'This is a protected resource for user: {user["username"]}', 'role': payload['role']}), 200
+            else:
+                return jsonify({'message': 'User not found'}), 404
+            
         # This route returns a list of sensors from the sensor collection
         @self.app.route("/sensors", methods=["GET"])
         def get_sensors():
@@ -233,6 +357,7 @@ class Flask_App():
 
         # This route returns a list of users from users collection
         @self.app.route("/users", methods=["GET"])
+        @authenticate_token()
         #@require_role(["admin", "operator"])
         def get_users():
             users_cursor = user_collection.find()
