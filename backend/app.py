@@ -15,7 +15,6 @@ import bcrypt
 
 
 class Flask_App():
-    # Shared with main
     system_state = None
     SECRET_KEY = os.environ.get('JWT_SECRET_KEY', '12345ABCDE')
     ALGORITHM = 'HS256'
@@ -24,96 +23,104 @@ class Flask_App():
         "password": "Password",  # NEVER do this in production
         "Role": "operator"
     }
-    # constructor
+
     def __init__(self, state) -> None:
         self.app = Flask(__name__)
         self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode='threading')
-        #, async_mode='eventlet'
-        self.state = state # This is a pointer to the system state object in main
-        CORS(self.app, resources={r"/*": {"origins": "http://localhost:5173"}})  # This allows the frontend and backend to connect
+        self.state = state
 
-        # Configure Flask-Session for secure cookies (adjust as needed)
-        self.SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'super-secret')
+        CORS(self.app, resources={r"/*": {"origins": "http://localhost:5173"}})
+
         self.app.config["JWT_SECRET_KEY"] = self.SECRET_KEY
         self.app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
-        self.app.config["JWT_COOKIE_SECURE"] = True  # Only send over HTTPS in production
-        self.app.config["JWT_COOKIE_HTTPONLY"] = True # Prevent JavaScript access
+        self.app.config["JWT_COOKIE_SECURE"] = True
+        self.app.config["JWT_COOKIE_HTTPONLY"] = True
         self.app.config["JWT_COOKIE_SAMESITE"] = "Strict"
         self.jwt = JWTManager(self.app)
 
+        self.define_routes()
 
-        # Implementation of user roles
-        def require_role(roles):
-            def decorator(f):
-                @wraps(f)  # Preserve function metadata
-                def decorated_function(*args, **kwargs):
-                    user_role = request.headers.get("Role")
-                    if user_role not in roles:
-                        abort(403)  # Forbidden
-                    return f(*args, **kwargs)
-                return decorated_function
-            return decorator
+    # ========== Helper Functions ==========
 
-        def create_jwt_token(self, user_id, role):
-            access_token = create_access_token(identity=str(user_id), additional_claims={'role': role})
-            return access_token
+    def create_jwt_token(self, user_id, role):
+        access_token = create_access_token(identity=str(user_id), additional_claims={'role': role})
+        return access_token
 
-        def verify_jwt_token(token):
-            try:
-                payload = jwt.decode(token, self.SECRET_KEY, algorithms=[self.ALGORITHM])
-                return payload
-            except jwt.ExpiredSignatureError:
-                return None  # Token has expired
-            except jwt.InvalidTokenError:
-                return None  # Invalid token
+    def verify_jwt_token(self, token):
+        try:
+            payload = jwt.decode(token, self.SECRET_KEY, algorithms=[self.ALGORITHM])
+            return payload
+        except jwt.ExpiredSignatureError:
+            return None
+        except jwt.InvalidTokenError:
+            return None
 
-        def authenticate_token():
-            def decorator(f):
-                @wraps(f)
-                def wrapper(*args, **kwargs):
-                    auth_header = request.headers.get('Authorization')
-                    if auth_header and auth_header.startswith('Bearer '):
-                        token = auth_header.split(' ')[1]
-                        payload = verify_jwt_token(token)
-                        if payload:
-                            #change user_id to payload and add .get('sub) for the secon payload
-                            kwargs['user_id'] = payload
-                            return f(*args, **kwargs)
-                        else:
-                            return jsonify({'message': 'Invalid or expired token'}), 401
+    def authenticate_token(self):
+        def decorator(f):
+            @wraps(f)
+            def wrapper(*args, **kwargs):
+                auth_header = request.headers.get('Authorization')
+                if auth_header and auth_header.startswith('Bearer '):
+                    token = auth_header.split(' ')[1]
+                    payload = self.verify_jwt_token(token)
+                    if payload:
+                        kwargs['payload'] = payload
+                        return f(*args, **kwargs)
                     else:
-                        return jsonify({'message': 'Authorization token is missing'}), 401
-                return wrapper
-            return decorator
+                        return jsonify({'message': 'Invalid or expired token'}), 401
+                else:
+                    return jsonify({'message': 'Authorization token is missing'}), 401
+            return wrapper
+        return decorator
 
-        # User authentication functions (assuming MongoDB for user_collection)
-        def get_user_by_username(username):
-            return user_collection.find_one({'username': username})
+    def get_user_by_username(self, username):
+        return user_collection.find_one({'username': username})
 
-        def create_user(username, password):
-            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-            user = {'username': username, 'password_hash': password_hash,'role': role} # remove the role part after testing
-            result = user_collection.insert_one(user)
-            return result.inserted_id
+    def create_user(self, username, password, role='observer'):
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        user = {'username': username, 'password_hash': password_hash, 'role': role}
+        result = user_collection.insert_one(user)
+        return result.inserted_id
 
-        def check_password(user, password):
-            return user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'])
+    def check_password(self, user, password):
+        return user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'])
 
-        # Routes
+    # ========== Routes ==========
+    def require_role(self, allowed_roles):
+        def decorator(f):
+            @wraps(f)
+            def wrapper(*args, **kwargs):
+                # Ensure token is present in the request
+                auth_header = request.headers.get('Authorization')
+                if auth_header and auth_header.startswith('Bearer '):
+                    token = auth_header.split(' ')[1]
+                    payload = self.verify_jwt_token(token)
+                    if payload and payload.get('role') in allowed_roles:
+                        kwargs['payload'] = payload
+                        return f(*args, **kwargs)
+                    else:
+                        return jsonify({'message': 'Forbidden: You do not have the required role'}), 403
+                else:
+                    return jsonify({'message': 'Authorization token is missing'}), 401
+            return wrapper
+        return decorator
+    
+    def define_routes(self):
         @self.app.route("/register", methods=["POST"])
         def register():
             data = request.json
             username = data.get('username')
             password = data.get('password')
+            role = data.get('role', 'observer')  # Optional: default role
 
             if not username or not password:
                 return jsonify({'message': 'Username and password are required'}), 400
 
-            if get_user_by_username(username):
+            if self.get_user_by_username(username):
                 return jsonify({'message': 'Username already exists'}), 409
 
-            user_id = create_user(username, password)
-            token = create_jwt_token(user_id)
+            user_id = self.create_user(username, password, role)
+            token = self.create_jwt_token(user_id, role)
             return jsonify({'message': 'User created successfully', 'token': token}), 201
 
         @self.app.route("/login", methods=["POST"])
@@ -122,39 +129,31 @@ class Flask_App():
             username = data.get('username')
             password = data.get('userPassword')
 
-            #delete hardcoded function once testing works.
+            # change this so its not using the hardcoded stuff
             if username == Flask_App.HARDCODED_USER['username'] and password == Flask_App.HARDCODED_USER['password']:
-                # In a real app, you'd fetch the user's ID from the database
-                # But since we're hardcoding, we'll just use a fixed ID
-                hardcoded_user_id = "hardcoded_user_id"  #  <--- NEVER do this in production
-                token = create_jwt_token(hardcoded_user_id, Flask_App.HARDCODED_USER['Role'])
-                response = make_response(jsonify({'message': 'Login successful'}))
-                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600) # max_age in seconds
+                token = self.create_jwt_token("hardcoded_user_id", Flask_App.HARDCODED_USER['Role'])
+                response = jsonify({'message': 'Login successful'})
+                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600)
                 return response, 200
-            
-            user = get_user_by_username(username)
-            if user and check_password(user, password):
-                token = create_jwt_token(user['_id'], user['role']) # Include the user's role in the token
-                response = make_response(jsonify({'message': 'Login successful'}))
-                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600) # max_age in seconds
+
+            user = self.get_user_by_username(username)
+            if user and self.check_password(user, password):
+                token = self.create_jwt_token(user['_id'], user['role'])
+                response = jsonify({'message': 'Login successful'})
+                response.set_cookie('access_token_cookie', token, httponly=True, secure=True, samesite='Strict', max_age=3600)
                 return response, 200
             else:
                 return jsonify({'message': 'Invalid credentials'}), 401
-            # delete up to ^ row and uncomment below
-
-            #user = get_user_by_username(username)
-            #if user and check_password(user, password):
-                #token = create_jwt_token(str(user['_id'])) # Assuming _id is ObjectId, convert to string
-                #return jsonify({'token': token}), 200
-            #else:
-                #return jsonify({'message': 'Invalid credentials'}), 401
 
         @self.app.route("/api/protected", methods=["GET"])
         @self.authenticate_token()
         def protected(payload):
             user = user_collection.find_one({'_id': ObjectId(payload['sub'])})
             if user:
-                return jsonify({'message': f'This is a protected resource for user: {user["username"]}', 'role': payload['role']}), 200
+                return jsonify({
+                    'message': f'Protected resource for user: {user["username"]}',
+                    'role': payload['role']
+                }), 200
             else:
                 return jsonify({'message': 'User not found'}), 404
             
@@ -182,7 +181,7 @@ class Flask_App():
             return jsonify({"backend_reset": reset_sensors})
         
         @self.app.route("/config_sensors", methods=["PATCH"])
-        #@require_role(["admin", "operator"])
+        #@self.require_role(["admin", "operator"])
         def config_sensors():
             data = request.json['data']
             print(data)
@@ -211,7 +210,7 @@ class Flask_App():
 
         # This route updates a high/low range values for a sensor in the sensor collection
         @self.app.route("/change_range/<id>", methods=["PATCH"])
-        #@require_role(["admin", "operator"])
+        #@self.require_role(["admin", "operator"])
         def change_range(id):
             sensor_id = {"_id": ObjectId(id)}  # Correctly format the sensor_id
             existing_sensor = sensor_collection.find_one(sensor_id) # Check if the sensor exists
@@ -243,6 +242,7 @@ class Flask_App():
             
         #updates the frequency setting in the database on the provided ID and JSON request.
         @self.app.route("/change_setting/<id>", methods=["PATCH"])
+        #@self.require_role(["admin"])
         def change_setting(id):
             try:
                 data = request.json   ###### IS THIS RIGHT???
@@ -264,7 +264,7 @@ class Flask_App():
             
 
         @self.app.route("/stop_run", methods=["PATCH"])
-        #@require_role(["admin", "operator"])
+        #@self.require_role(["admin", "operator"])
         def stop_run():
             data = request.json
             setting_id = ObjectId(data.get('setting_id'))
@@ -462,12 +462,21 @@ class Flask_App():
 
         @self.socketio.on('message')
         def client_message(data):
+            role = data.get("role", "observer")
+            if role not in ["admin", "operator", "observer"]:
+                return  # Invalid role
+            
             print(f"Received WebSocket message: {data}")
             emit('response', {"message": "Hello from WebSocket!"}, broadcast=True)  # Send a response
 
         @self.socketio.on('packet')
         def send_packet(data):
+            role = data.get("role", "observer")
 
+            if role not in ["admin", "operator", "observer"]:
+                print("⚠️ Unauthorized role attempted to access packet.")
+                return
+            
             # in system state, in the Sensor List, iterate through the sensors and return the timestamps and data
             Sensor_List = self.state.get("Sensor List")
             newData = {}
@@ -508,6 +517,11 @@ class Flask_App():
 
         @self.socketio.on('update')
         def send_update(data):
+            role = data.get("role", "observer")
+            if role not in ["admin", "operator"]:
+                print("❌ Role not permitted to request updates.")
+                return
+            
             # in system state, in the Sensor List, iterate through the sensors and return the timestamps and data
             Sensor_List = self.state.get("Sensor List")
             newData = {}
@@ -554,6 +568,12 @@ class Flask_App():
         # Method to shutdown the server
         @self.app.route('/shutdown', methods=['POST'])
         def shutdown():
+            data = request.json
+            role = data.get("role")
+
+            if role != "admin":
+                return jsonify({"success": False, "message": "Unauthorized: Only admins can shut down the server"}), 403
+
             def stop_server():
                 print("Server is shutting down...")
                 os._exit(0)  # Forcefully terminate the process
