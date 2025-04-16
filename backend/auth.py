@@ -1,4 +1,4 @@
-# backend/auth.py
+# responsible for authentication and verifies who the user is
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token
 from datetime import timedelta

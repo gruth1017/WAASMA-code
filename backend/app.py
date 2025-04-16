@@ -12,11 +12,12 @@ from datetime import datetime, timedelta
 from db_config import user_collection, sensor_collection, settings_collection
 import jwt
 import bcrypt
+import secrets
 
 
 class Flask_App():
     system_state = None
-    SECRET_KEY = os.environ.get('JWT_SECRET_KEY', '12345ABCDE')
+    SECRET_KEY = os.environ.get('JWT_SECRET_KEY', secrets.token_hex(32))
     ALGORITHM = 'HS256'
     HARDCODED_USER = {
         "username": "gruth1017@gmail.com",
